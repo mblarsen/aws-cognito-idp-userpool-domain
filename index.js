@@ -1,15 +1,14 @@
-'use strict';
+"use strict";
 
-const AWS = require('aws-sdk');
-const util = require('util');
-const chalk = require('chalk');
+const AWS = require("aws-sdk");
+const util = require("util");
+const chalk = require("chalk");
 
 class ServerlessPlugin {
-
   constructor(serverless, options) {
     this.serverless = serverless;
     this.options = options || {};
-    this.provider = this.serverless.getProvider('aws');
+    this.provider = this.serverless.getProvider("aws");
     try {
       this.servicename = this.serverless.service.getServiceName();
       this.stage = this.provider.getStage();
@@ -18,17 +17,21 @@ class ServerlessPlugin {
       AWS.config.update({
         region: this.region
       });
-      
-      this.cognitoIdp = new AWS.CognitoIdentityServiceProvider({ apiVersion: '2016-04-18' });
 
-      this.stackname = this.servicename + '-' + this.stage;
+      this.cognitoISP = new AWS.CognitoIdentityServiceProvider({
+        apiVersion: "2016-04-18"
+      });
+
+      this.stackname = this.servicename + "-" + this.stage;
 
       this.hooks = {
         // deploy
-        'after:aws:package:finalize:mergeCustomProviderResources': this.add_outputs.bind(this),
-        'after:deploy:deploy': this.process_deploy.bind(this),
+        "after:aws:package:finalize:mergeCustomProviderResources": this.addOutputs.bind(
+          this
+        ),
+        "after:deploy:deploy": this.processDeploy.bind(this),
         // remove
-        'before:remove:remove': this.process_remove.bind(this)
+        "before:remove:remove": this.processRemove.bind(this)
       };
     } catch (error) {
       this.serverless.cli.log(error.stack);
@@ -38,206 +41,183 @@ class ServerlessPlugin {
   //===================================
   // Remove: before:remove:remove
 
-  async process_remove() {
-    this.plugin_log('process_remove started.');
-    var that = this;
-    // get userpool names from serverless.yml in a array
-    var names = await this.get_sls_userpool_names();
-    if(!names) {
-      this.plugin_log('no userpools defined in serverless.yml to be to removed.');
+  async processRemove() {
+    const names = await this.getSLSUserPoolNames();
+    if (!names) {
       return;
     }
+
     // get userpool strutures from aws
-    var userpools = await this.get_aws_cognito_userpools();
-    if(!userpools) {
-      this.plugin_log('no userpools on aws to be removed.');
+    var userPools = await this.getAWSCognitoUserPools();
+    if (!userPools) {
       return;
-    }  
+    }
+
     // process only the aws userpools that are defined on serverless.yml
-    var userpools2process = [];  
-    userpools.forEach(function (userpool) {
-      if(names.includes(userpool.Name)) {
-        userpools2process.push(userpool);
-      }
+    const userPoolsToProcess = userPools.filter(up => names.includes(up.Name));
+
+    if (userPoolsToProcess.length == 0) {
+    }
+
+    userPoolsToProcess.forEach(async userPool => {
+      await this.deleteUserPoolDomain(userPool.Id, userPool.Name);
     });
-
-    if(userpools2process.length==0) {
-      this.plugin_log('no userpools to remove.');
-    }
-
-    for(var userpoolindex in userpools2process) {
-      var userpool = userpools2process[userpoolindex];
-      await this.delete_userpool_domain(userpool.Id, userpool.Name);
-    }
-    this.plugin_log('process_remove finished.');
   }
 
-  async get_sls_userpool_names() {
-    if(this.serverless.service.resources===null || this.serverless.service.resources.Resources===null) {
-      return null;
+  async getSLSUserPoolNames() {
+    const resources =
+      this.serverless.service.resources &&
+      this.serverless.service.resources.Resources;
+    if (!resources || typeof resources !== "object") {
+      return;
     }
-    var names = [];
-    var that = this;
-    var keys = [];
-    try {
-      keys = Object.keys(this.serverless.service.resources.Resources);
-    } catch (error) {
-      this.plugin_log(error.stack);
-    }
-    keys.forEach(function (value) {
-      var item = that.serverless.service.resources.Resources[value];
-      if (item.Type == 'AWS::Cognito::UserPool') {
-        names.push(item.Properties.UserPoolName);
-      }
-    });
-    return names;
+    return Object.values(resources)
+      .filter(resource => {
+        return resource.Type === "AWS::Cognito::UserPool";
+      })
+      .map(resource => resource.Properties.UserPoolName);
   }
 
-  async get_aws_cognito_userpools() {
-    var that = this;
+  async getAWSCognitoUserPools() {
     var userpools = [];
     var params = {
-      MaxResults: 1, /* required */
+      MaxResults: 1 /* required */
       /* NextToken: 'STRING_VALUE' */
     };
     var hasNext = true;
-    while(hasNext) {
-      await this.cognitoIdp.listUserPools(params).promise().then(data => {
-        if(data.UserPools.length != 0) {
-          Array.prototype.push.apply(userpools,data.UserPools); 
-          userpools.concat(data.UserPools);
-          if(data.NextToken) {
-            params.NextToken = data.NextToken;
+    while (hasNext) {
+      await this.cognitoISP
+        .listUserPools(params)
+        .promise()
+        .then(data => {
+          if (data.UserPools.length != 0) {
+            Array.prototype.push.apply(userpools, data.UserPools);
+            userpools.concat(data.UserPools);
+            if (data.NextToken) {
+              params.NextToken = data.NextToken;
+            } else {
+              hasNext = false;
+            }
           } else {
             hasNext = false;
           }
-        } else {
-          hasNext = false;
-        }
-      }).catch(error => {
-        this.plugin_log(util.format('Error: %s, \'%s\'', error.code, error.message));
-      });
+        })
+        .catch(error => {
+          this.log(util.format("Error: %s, '%s'", error.code, error.message));
+        });
     }
-    if(userpools.length==0) {
+    if (userpools.length == 0) {
       return null;
     } else {
       return userpools;
     }
-  }  
+  }
 
-  async delete_userpool_domain(userpoolid, domainname) {
+  async deleteUserPoolDomain(userPoolID, domainName) {
     var that = this;
-    this.plugin_log('Deleting user pool domain...');
-    this.plugin_log(`userpoolid: [${userpoolid}], domainname: [${domainname}]`);
+    this.log(
+      `Deleting user pool domain "${domainName}" for pool with ID ${userPoolID}...`
+    );
     try {
-      var params = {
-        Domain: domainname,
-        UserPoolId: userpoolid
-      };
-      await this.cognitoIdp.deleteUserPoolDomain(params).promise().then(data => {
-        that.plugin_log('domain deleted');
-      }).catch(error => {
-        that.plugin_log(util.format('Error: %s, \'%s\'', error.code, error.message));
+      await this.cognitoISP.deleteUserPoolDomain({
+        Domain: domainName,
+        UserPoolId: userPoolID
       });
-      this.plugin_log('done.');
+      that.log("Domain deleted");
     } catch (error) {
-      this.plugin_log(error.stack);
+      that.log(util.format("Error: %s, '%s'", error.code, error.message));
     }
   }
 
   //===================================
   // Deploy: after:aws:package:finalize:mergeCustomProviderResources
 
-  async add_outputs() {
-    var resources = this.serverless.service.provider.compiledCloudFormationTemplate.Resources;
+  async addOutputs() {
+    var resources = this.serverless.service.provider
+      .compiledCloudFormationTemplate.Resources;
     for (let key in resources) {
-      if (resources[key].Type === 'AWS::Cognito::UserPool') {
-        await this.add_poolid_outputs('UserPoolId' + key, key);
+      if (resources[key].Type === "AWS::Cognito::UserPool") {
+        await this.addPoolIDOutputs("UserPoolId" + key, key);
       }
     }
   }
 
-  async add_poolid_outputs(name, value) {
-    var outputs = this.serverless.service.provider.compiledCloudFormationTemplate.Outputs;
+  async addPoolIDOutputs(name, value) {
+    var outputs = this.serverless.service.provider
+      .compiledCloudFormationTemplate.Outputs;
     outputs[name] = { Value: { Ref: value } };
   }
 
   //===================================
   // Deploy: after:deploy:deploy
 
-  async process_deploy() {
-    this.plugin_log('process_deploy started.');
-    var that = this;
+  async processDeploy() {
     try {
-      var userpoolids = await this.get_deployed_userpool_id()
-      userpoolids = userpoolids
-        .filter(upi => upi.name !== 'UserPoolId')
+      const userPoolIDs = await this.getDeployedUserPoolIDs();
+      userPoolIDs
+        .filter(upi => upi.name !== "UserPoolId")
         .map(upi => {
-          var cleanName = upi.name.substring(10)
-          var resource = that.serverless.service.resources.Resources[cleanName]
-          upi.domain = resource.Properties.UserPoolName
-          return upi
+          const cleanName = upi.name.substring(10);
+          const resource = this.serverless.service.resources.Resources[
+            cleanName
+          ];
+          upi.domain = resource.Properties.UserPoolName;
+          return upi;
         })
-      userpoolids.forEach(async ({ id, domain }) => {
-        await that.create_userpool_domain(id, domain)
-      })
+        .forEach(async ({ id, domain }) => {
+          await this.createUserPoolDomain(id, domain);
+        });
     } catch (error) {
-      this.plugin_log(error.stack);
+      this.log(error.stack);
     }
-    this.plugin_log('process_deploy finished.');
   }
 
-  async create_userpool_domain(userpoolid, domainname) {
-    this.plugin_log('Creating user pool domain...');
-    this.plugin_log(`userpoolid: [${userpoolid}], domainname: [${domainname}]`);
+  async createUserPoolDomain(userPoolID, domainName) {
+    this.log(
+      `Setting user pool domain "${domainName}" on pool with ID ${userPoolID}...`
+    );
     try {
-      var params = {
-        Domain: domainname,
-        UserPoolId: userpoolid,
-      };
-      var that = this;
-      await this.cognitoIdp.createUserPoolDomain(params).promise().then(data => {
-        that.plugin_log('domain created');
-      }).catch(error => {
-        that.plugin_log(util.format('Error: %s, \'%s\'', error.code, error.message));
-        that.plugin_log(error.stack);
+      await this.cognitoISP.createUserPoolDomain({
+        Domain: domainName,
+        UserPoolId: userPoolID
       });
-      this.plugin_log('done.');
+      this.log(`Domain set`);
     } catch (error) {
-      this.plugin_log(error.stack);
+      this.log(util.format("Error: %s, '%s'", error.code, error.message));
+      this.log(error.stack);
     }
   }
 
-  async get_deployed_userpool_id() {
-    var user_pool_ids = [];
+  async getDeployedUserPoolIDs() {
+    var userPoolIDs = [];
     try {
-      var result = await this.fetch_CloudFormation_describeStacks();
+      var result = await this.fetchCloudFormationDescribeStacks();
       var result_array = result.Stacks[0].Outputs;
-      result_array.forEach(function (item) {
-        if (item.OutputKey.startsWith('UserPoolId')) {
-          user_pool_ids.push({id:item.OutputValue,name:item.OutputKey});
+      result_array.forEach(function(item) {
+        if (item.OutputKey.startsWith("UserPoolId")) {
+          userPoolIDs.push({ id: item.OutputValue, name: item.OutputKey });
         }
       });
-      return user_pool_ids;
+      return userPoolIDs;
     } catch (error) {
-      this.plugin_log(error.stack);
+      this.log(error.stack);
     }
-  }  
+  }
 
-  async fetch_CloudFormation_describeStacks() {
+  async fetchCloudFormationDescribeStacks() {
     try {
       var params = { StackName: this.stackname };
-      return this.provider.request('CloudFormation', 'describeStacks', params);
+      return this.provider.request("CloudFormation", "describeStacks", params);
     } catch (error) {
-      this.plugin_log(error.stack);
+      this.log(error.stack);
     }
   }
 
-  async plugin_log(msg) {
-    this.serverless.cli.consoleLog(`${chalk.yellow('Plugin [aws-cognito-idp-userpool-domain]')}: ${msg}`);
+  async log(msg) {
+    this.serverless.cli.consoleLog(
+      `${chalk.yellow("AWSCognitoIDPUserPoolDomain")}: ${msg}`
+    );
   }
-
 }
 
 module.exports = ServerlessPlugin;
-
