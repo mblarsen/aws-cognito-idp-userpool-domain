@@ -154,37 +154,46 @@ class ServerlessPlugin {
   async processDeploy() {
     try {
       const userPoolIDs = await this.getDeployedUserPoolIDs();
-      userPoolIDs
-        .filter(upi => upi.name !== "UserPoolId")
-        .map(upi => {
-          const cleanName = upi.name.substring(10);
-          const resource = this.serverless.service.resources.Resources[
-            cleanName
-          ];
-          upi.domain = resource.Properties.UserPoolName;
-          return upi;
-        })
-        .forEach(async ({ id, domain }) => {
-          await this.createUserPoolDomain(id, domain);
-        });
-    } catch (error) {
-      this.log(error.stack);
+      await Promise.all(
+        userPoolIDs
+          .filter(upi => upi.name !== "UserPoolId")
+          .map(upi => {
+            const cleanName = upi.name.substring(10);
+            const resource = this.serverless.service.resources.Resources[
+              cleanName
+            ];
+            upi.domain = resource.Properties.UserPoolName;
+            return upi;
+          })
+          .map(({ id, domain }) => {
+            return this.createUserPoolDomain(id, domain);
+          })
+      );
+    } catch (err) {
+      this.log("Error: " + err.message);
+      this.log(err.stack);
     }
   }
 
   async createUserPoolDomain(userPoolID, domainName) {
     this.log(
-      `Setting user pool domain "${domainName}" on pool with ID ${userPoolID}...`
+      `Creating user pool domain "${domainName}" on pool with ID ${userPoolID}...`
     );
     try {
-      await this.cognitoISP.createUserPoolDomain({
-        Domain: domainName,
-        UserPoolId: userPoolID
-      });
-      this.log(`Domain set`);
-    } catch (error) {
-      this.log(util.format("Error: %s, '%s'", error.code, error.message));
-      this.log(error.stack);
+      return await this.cognitoISP
+        .createUserPoolDomain({
+          Domain: domainName,
+          UserPoolId: userPoolID
+        })
+        .promise()
+        .then(() => {
+          this.log("Domain created");
+        });
+    } catch (err) {
+      if (err.message !== "Domain already exists.") {
+        throw err;
+      }
+      this.log("Skipping, domain already exists");
     }
   }
 
