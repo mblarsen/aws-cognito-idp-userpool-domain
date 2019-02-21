@@ -56,12 +56,11 @@ class ServerlessPlugin {
     // process only the aws userpools that are defined on serverless.yml
     const userPoolsToProcess = userPools.filter(up => names.includes(up.Name));
 
-    if (userPoolsToProcess.length == 0) {
-    }
-
-    userPoolsToProcess.forEach(async userPool => {
-      await this.deleteUserPoolDomain(userPool.Id, userPool.Name);
-    });
+    await Promise.all(
+      userPoolsToProcess.map(userPool => {
+        return this.deleteUserPoolDomain(userPool.Id, userPool.Name);
+      })
+    );
   }
 
   async getSLSUserPoolNames() {
