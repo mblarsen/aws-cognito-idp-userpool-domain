@@ -161,9 +161,13 @@ class ServerlessPlugin {
             const resource = this.serverless.service.resources.Resources[
               cleanName
             ];
+            if (!resource) {
+              return
+            }
             upi.domain = resource.Properties.UserPoolName;
             return upi;
           })
+          .filter(Boolean)
           .map(({ id, domain }) => {
             return this.createUserPoolDomain(id, domain);
           })
